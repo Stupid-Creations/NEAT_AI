@@ -123,7 +123,7 @@ class NEAT:
                 new.Nodes.append(i.input)
             if i.output not in new.Nodes:
                 new.Nodes.append(i.output)
-    
+        new.mutate()
         return new
 
     def set_fitness(self,fitness):
