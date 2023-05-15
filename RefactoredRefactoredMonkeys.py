@@ -10,11 +10,16 @@ class NEAT:
         self.fitness = None
         self.innov = []
 
-        for i in range(input):
-            self.Nodes.append(Node(0,self))
+        for i in range(input+1):
+            if i != input:
+                self.Nodes.append(Node(0,self))
+            if i == input:
+                # 3 is bias node
+                self.Nodes.append(Node(3,self))
+
         for i in range(output):
             self.Nodes.append(Node(2,self))
-            for j in range(input):
+            for j in range(input+1):
                 self.genes.append(Genome(self.Nodes[j],self.Nodes[-1],self,innov))
             self.Nodes[-1].update_genes(self)
         self.innov = [a.innov for a in self.genes]
@@ -23,13 +28,18 @@ class NEAT:
     def activate(self,input):
         for i in range(2):
             self.pred = []
+            inp_count = 0
             for i in range(len(self.Nodes)):
-                if self.Nodes[i].mode == 0:
-                    self.Nodes[i].activate(input[i])
+                if self.Nodes[i].mode == 0: 
+                    self.Nodes[i].activate(input[inp_count])
+                    inp_count+=1
                 else:
-                    self.Nodes[i].activate()
-                    if self.Nodes[i].mode == 2:
-                        self.pred.append(self.Nodes[i].pred)
+                    if self.Nodes[i].mode != 3:
+                        self.Nodes[i].activate()
+                        if self.Nodes[i].mode == 2:
+                            self.pred.append(self.Nodes[i].pred)
+                    else:
+                        self.Nodes[i].pred = 1
 
     def add_node(self,innov):
         choose = random.choice(self.genes)
@@ -73,15 +83,14 @@ class NEAT:
         seed = random.random()
         if Repeat:
             seed = seeds
-            print('a')
-        if seed < 0.10:
+        if seed < 0.30:
             self.add_node(innov)
-        elif seed < 0.35:
-            a = self.add_connection(innov)
-            print('b')
-            if a == 0:
-                seed += 0.9-seed
-                self.mutate(innov)
+        elif seed < 0.65:
+            try:
+                a = self.add_connection(innov)
+            except:
+                seed += 0.20-seed
+                self.mutate(innov,seed,True)
         elif seed <= 1:
             self.rand_weight()
         
@@ -123,39 +132,80 @@ class NEAT:
                 new.Nodes.append(i.input)
             if i.output not in new.Nodes:
                 new.Nodes.append(i.output)
-        new.mutate()
+        new.mutate(innov)
         return new
 
     def set_fitness(self,fitness):
         self.fitness = fitness
 
-    def calc_compatibility(self,a,b,coeffEXCESS,coeffDISJOINT,coeffDIFF_MATCHING_WEIGHTS,compat_threshold):
-        longer = max([len(a.genes),len(b.genes)])
-        if longer == len(a.genes):
-            long = a
+def calc_compatibility(a,b,coeffEXCESS,coeffDISJOINT,coeffDIFF_MATCHING_WEIGHTS,compat_threshold):
+    longer = max([len(a.genes),len(b.genes)])
+    if longer == len(a.genes):
+        long = a
+    else:
+        long = b
+    if longer < 20:
+        longer = 1
+
+    matches = [x for x in a.innov if x in b.innov]
+    last_match = max(matches)
+
+    excess = len([x for x in long.genes if x.innov > last_match])
+    disjoint = len([x for x in long.genes if x.innov < last_match])
+    average_weight_diff = sum([a.weight-b.weight for a,b in zip(a.genes,b.genes) if a.innov in matches])/len(matches)
+
+    return (coeffDISJOINT*disjoint)/longer+(coeffEXCESS*excess)/longer+(coeffDIFF_MATCHING_WEIGHTS*average_weight_diff) <= compat_threshold
+
+    # in adjusted fitness, since we will make species in the main code, we can just reference species size here instead of comparing 
+    # with full population each time
+def compute_species(species: list,innov):
+    fitnesses = [a.fitness for a in species]
+    adjusted_fits = [a/len(species) for a in fitnesses]
+    mean_adjusted_fit = sum(adjusted_fits)/len(adjusted_fits)
+    pop_size_current = round(sum(fitnesses)/mean_adjusted_fit)
+    new_pop = []
+    species.sort(key = lambda x: x.fitness)
+    #kill the underperformng 90% of the population
+    can_repro = [a for a in species if species.index(a) < round((pop_size_current*9)/10)]
+    for i in range(pop_size_current):
+        new_pop.append(trychoice(can_repro).crossover(trychoice(can_repro),innov))
+    return new_pop
+
+def speciate_pop(s_population,c_of_wd,c_of_excess,c_of_disjoint,threshold):
+    new_pop = []
+    for i in s_population:
+        done = False
+        if len(new_pop)>0:
+            for j in new_pop:
+                # any one member is enough
+                if calc_compatibility(i,j[0],c_of_excess,c_of_disjoint,c_of_wd,threshold):
+                    new_pop[new_pop.index(j)].append(i)
+                    done = True
+                    break
+            if not done:
+                # make new species if not in existing species
+                new_pop.append([i])
         else:
-            long = b
+            new_pop.append([i])
+    return new_pop
 
-        matches = [x for x in a.innov if x in b.innov]
-        last_match = max(matches)
+def update_pop(s_pop,c_of_wd,c_of_excess,c_of_disjoint,threshold,one_piece_of_data,answer,innov):
+    n_s_pop = []
+    n_us_pop = []
+    MSE = lambda x,y: sum([(a[0]-a[1])**2 for a in zip(x,y)])/len(answer)
+    # get the fitnesses
+    for i in s_pop:
+        for j in i:
+            j.activate(one_piece_of_data)
+            # use a - because we are using a cost function so the better the network, the smaller the cost
+            j.set_fitness(-(MSE(j.pred,answer)))
+    #make populations
+    for i in s_pop:
+        for j in compute_species(i,innov):
+            n_us_pop.append(j)
 
-        excess = len([x for x in long.genes if x.innov > last_match])
-        disjoint = len([x for x in long.genes if x.innov < last_match])
-        average_weight_diff = sum([a.weight-b.weight for a,b in zip(a.genes,b.genes) if a.innov in matches])/len(matches)
-
-        return (coeffDISJOINT*disjoint)/longer+(coeffEXCESS*excess)/longer+(coeffDIFF_MATCHING_WEIGHTS*average_weight_diff) <= compat_threshold
-
-    def compute_population(self,population: list):
-        fitnesses = [a.fitness for a in population]
-        adjusted_fits = [a/len(population) for a in fitnesses]
-        mean_adjusted_fit = sum(adjusted_fits)/len(adjusted_fits)
-        pop_size_current = sum(fitnesses)/mean_adjusted_fit
-        new_pop = []
-        population.sort(key = lambda x: x.fitness)
-        can_repro = [a for a in population if population.index(a) < (pop_size_current/2)]
-        for i in range(pop_size_current):
-            new_pop.append(trychoice(can_repro).crossover(trychoice(can_repro)))
-        return new_pop
+    n_s_pop = speciate_pop(n_us_pop,c_of_wd,c_of_excess,c_of_disjoint,threshold)
+    return n_s_pop
 
 sigmoid = lambda x: 1/(1+pow(2.7128,-x))
 
